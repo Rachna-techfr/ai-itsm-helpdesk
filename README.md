@@ -263,7 +263,7 @@ npm run dev -- --port 3000
 ```bash
 pytest backend/tests -v
 ```
-All 8 test scenarios pass cleanly in ~15 seconds:
+All 12 test scenarios pass cleanly:
 ```
 backend/tests/test_scenarios.py::test_scenario_1_intelligent_ticket_vpn PASSED
 backend/tests/test_scenarios.py::test_scenario_2_self_healing_password PASSED
@@ -273,7 +273,11 @@ backend/tests/test_scenarios.py::test_scenario_5_unknown_question_safety PASSED
 backend/tests/test_scenarios.py::test_servicenow_get_incident PASSED
 backend/tests/test_scenarios.py::test_software_approval_workflow PASSED
 backend/tests/test_scenarios.py::test_chat_history_persistence PASSED
-======================== 8 passed in 15.94s ========================
+backend/tests/test_scenarios.py::test_chat_contractor_figma_denial PASSED
+backend/tests/test_scenarios.py::test_generic_messages_do_not_provision_vscode PASSED
+backend/tests/test_scenarios.py::test_cannot_approve_rejected_or_completed_request PASSED
+backend/tests/test_scenarios.py::test_ticket_counter_monotonically_increases PASSED
+======================= 12 passed in 34.24s =======================
 ```
 
 ---
@@ -284,7 +288,7 @@ backend/tests/test_scenarios.py::test_chat_history_persistence PASSED
 | :--- | :--- | :--- |
 | **2 min** | **Business Problem & Solution** | Explain Tier-1 volume overload. Introduce SORIM.AI autonomous ITSM agent. |
 | **3 min** | **Architecture & Technology Choices** | Walk through the architecture: React UI + FastAPI + FAISS Vector Store + sentence-transformers MiniLM + MongoDB Atlas + ServiceNow REST Table API. |
-| **8–10 min** | **Live Demonstration of the 5 Scenarios** | 1. **Scenario 1 Button:** VPN failure $\rightarrow$ AI 7-field extraction $\rightarrow$ ServiceNow INC created.<br>2. **Scenario 2 Button:** Password expired $\rightarrow$ 7-stage autonomous self-healing $\rightarrow$ ServiceNow resolved.<br>3. **Scenario 3 Button:** Outlook synchronization $\rightarrow$ Intent is Knowledge Question $\rightarrow$ RAG search retrieves `KB0005` $\rightarrow$ Grounded answer with citation (no incident created).<br>4. **Scenario 4 Button:** VS Code request $\rightarrow$ Policy validation $\rightarrow$ ServiceNow REQ created $\rightarrow$ Intune completed.<br>5. **Scenario 5 Button:** Sourdough question $\rightarrow$ Score $< 0.18$ $\rightarrow$ Safe refusal + Escalation offer. |
+| **8–10 min** | **Live Demonstration of the 5 Scenarios** | 1. **Scenario 1 Button:** VPN failure $\rightarrow$ AI 7-field extraction $\rightarrow$ ServiceNow INC created.<br>2. **Scenario 2 Button:** Password expired $\rightarrow$ 7-stage autonomous self-healing $\rightarrow$ ServiceNow resolved.<br>3. **Scenario 3 Button:** Outlook synchronization $\rightarrow$ Intent is Knowledge Question $\rightarrow$ RAG search retrieves `KB0005` $\rightarrow$ Grounded answer with citation (no incident created).<br>4. **Scenario 4 Button:** VS Code request $\rightarrow$ Policy validation $\rightarrow$ ServiceNow REQ created $\rightarrow$ Intune completed.<br>5. **Scenario 5 Button:** Sourdough question $\rightarrow$ Score $< 0.18$ $\rightarrow$ Safe refusal + Escalation offer.<br>*Key Explanations during Scenarios:*<br>• **Sourdough Refusal:** *“For auditability and transparency, the response displays the closest candidate chunk in the knowledge base, but because its cosine similarity is strictly below our 0.18 threshold, no answer is hallucinated and a safety refusal is triggered.”*<br>• **ServiceNow Mode:** *“Our ServiceNow integration implements the real Table API schema (`incident` and `sc_request`). If running without an enterprise instance, state: 'This is an enterprise mock implementing the exact Table API field mapping and sys_id conventions.'”*<br>• **Model & RAG:** *“When `HF_TOKEN` is set, answers use `Qwen/Qwen2.5-3B-Instruct`; otherwise the system seamlessly uses our grounded FAISS + MiniLM runbook synthesizer.”* |
 | **2 min** | **ITSM Dashboard & Audit Logs** | Switch to *ITSM Dashboard* and *AI Analysis* tabs to show live metrics, MTTR savings, and permanent Audit Log table. |
 | **2 min** | **Knowledge Base & RAG Vector Search** | Switch to *Knowledge Base* tab. Run semantic search query to demonstrate FAISS cosine similarity scoring and chunk extraction. |
 | **2–3 min** | **Challenges, Learnings & Roadmap** | Review known limitations and future production architecture (SSO, MID Server, Qdrant cluster). |

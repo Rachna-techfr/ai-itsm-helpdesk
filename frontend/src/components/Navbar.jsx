@@ -103,9 +103,11 @@ export default function Navbar({ activeTab, setActiveTab, health, onReset }) {
           border: '1px solid #05966940',
         }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#10b981', display: 'inline-block' }} />
-          <span>{health?.embeddings || 'MiniLM'}</span>
+          <span title={health?.provider_note || 'Dense Vector Embeddings'}>{health?.embeddings || 'all-MiniLM-L6-v2'}</span>
           <span style={{ color: '#059669' }}>•</span>
-          <span>{health?.servicenow?.includes('Live') ? 'ServiceNow Live' : 'ServiceNow Mock'}</span>
+          <span title="Database Backend">{health?.store === 'MongoDB Atlas' ? 'MongoDB Atlas' : 'Local Store'}</span>
+          <span style={{ color: '#059669' }}>•</span>
+          <span title="ServiceNow Table API">{health?.servicenow?.includes('Live') ? 'ServiceNow Live' : 'ServiceNow Mock'}</span>
         </div>
 
         <button
