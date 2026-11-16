@@ -159,36 +159,52 @@ class RAGEngine:
         )
 
     def _call_huggingface(self, query: str, context: str) -> str | None:
-        """Call Hugging Face Inference using huggingface_hub or modern Router endpoint."""
+        """Call Hugging Face Inference using chat completions or text generation."""
         try:
             from huggingface_hub import InferenceClient
 
-            client = InferenceClient(model=self.hf_model, token=self.hf_token, timeout=12.0)
-            prompt = (
-                f"You are the IT Helpdesk AI Assistant. Answer the question using ONLY the approved context below.\n"
-                f"Context:\n{context}\n\n"
-                f"Question: {query}\n"
-                f"Answer:"
-            )
+            client = InferenceClient(model=self.hf_model, token=self.hf_token, timeout=15.0)
+
+            # 1. Try chat completion (for instruct/chat models like Qwen)
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are the IT Helpdesk AI Assistant. Answer the question using ONLY the approved context below:\n\n{context}",
+                },
+                {"role": "user", "content": query},
+            ]
+            try:
+                chat_res = client.chat.completions.create(messages=messages, max_tokens=250, temperature=0.2)
+                if chat_res and chat_res.choices:
+                    return chat_res.choices[0].message.content.strip()
+            except Exception as e:
+                logger.info("Chat completion attempt failed (%s), trying text_generation", e)
+
+            # 2. Try text generation
+            prompt = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
             resp = client.text_generation(prompt, max_new_tokens=220, temperature=0.2)
             if resp:
                 return resp.strip()
         except Exception as exc:
             logger.info("InferenceClient fallback to HTTP: %s", exc)
 
-        # Fallback HTTP to modern router endpoint
+        # 3. Fallback HTTP to modern router endpoint
         import httpx
+
         url = f"https://router.huggingface.co/hf-inference/models/{self.hf_model}"
         headers = {"Authorization": f"Bearer {self.hf_token}"}
         prompt = f"Context: {context}\n\nQuestion: {query}\nAnswer:"
-        with httpx.Client(timeout=10.0) as http_client:
-            resp = http_client.post(
-                url,
-                json={"inputs": prompt, "parameters": {"max_new_tokens": 200, "temperature": 0.2}},
-                headers=headers,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    return data[0].get("generated_text", "").strip()
+        try:
+            with httpx.Client(timeout=10.0) as http_client:
+                resp = http_client.post(
+                    url,
+                    json={"inputs": prompt, "parameters": {"max_new_tokens": 200, "temperature": 0.2}},
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        return data[0].get("generated_text", "").strip()
+        except Exception as exc:
+            logger.warning("HTTP fallback failed: %s", exc)
         return None
