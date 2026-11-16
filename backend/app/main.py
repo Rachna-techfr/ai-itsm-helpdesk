@@ -30,7 +30,7 @@ from app.util import now_iso, snow_sys_id
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
 
-# Load configuration and initialize singletons
+# Load settings and initialize singletons
 settings = load_settings()
 embedder = Embedder(backend=settings.embedding_backend)
 servicenow = ServiceNowClient(settings)
@@ -39,9 +39,9 @@ rag = RAGEngine(settings, embedder, store)
 agent = HelpdeskAgent(settings, store, rag, servicenow)
 
 app = FastAPI(
-    title="Northline AI-Powered ITSM & Intelligent Helpdesk",
-    description="Autonomous IT Service Management with RAG, Self-Healing Agents, and ServiceNow Integration",
-    version="2.0.0",
+    title="SORIM.AI — Autonomous ITSM Helpdesk Engine",
+    description="Enterprise IT Service Management with FAISS Vector Search, RAG, Self-Healing Agents, and ServiceNow Integration",
+    version="2.1.0",
 )
 
 app.add_middleware(
@@ -59,15 +59,15 @@ def get_health() -> dict:
     ai_resolved = len([t for t in store.tickets if t.get("ai_resolved")])
     return {
         "status": "operational",
-        "service": "Northline AI ITSM Engine",
+        "service": "SORIM.AI ITSM Engine",
         "provider": "Hugging Face / Open Source",
-        "provider_label": f"Hugging Face ({settings.hf_model})" if settings.hf_token else "Grounded RAG Synthesizer",
-        "provider_note": "MiniLM 384-dim dense embeddings + Cosine semantic search.",
+        "provider_label": f"Hugging Face ({settings.hf_model})" if settings.hf_token else "Grounded RAG Synthesizer (FAISS + MiniLM)",
+        "provider_note": "FAISS FlatIP 384-dim dense vector database with all-MiniLM-L6-v2 embeddings.",
         "model": settings.hf_model,
         "store": "MongoDB Atlas" if store.use_mongo else "Local Persistent JSON Store",
         "servicenow": "Live ServiceNow Table API" if servicenow.is_live else "Enterprise ServiceNow Mock (Table API Spec)",
         "embeddings": embedder.kind,
-        "vector_search": "In-process Cosine Similarity (384-dim)",
+        "vector_search": "FAISS Inner Product (384-dim)",
         "thresholds": {
             "auto_resolve": settings.auto_resolve_threshold,
             "escalate_below": settings.escalate_below,
@@ -87,13 +87,35 @@ def get_health() -> dict:
 
 @app.post("/api/chat", response_model=ChatOut)
 def chat_endpoint(payload: ChatIn) -> ChatOut:
-    """Core employee portal interaction endpoint."""
+    """Core employee portal chat endpoint with chat history persistence."""
     user_dict = payload.user.model_dump()
-    return agent.handle_message(
+    response = agent.handle_message(
         message=payload.message,
         user=user_dict,
         session_id=payload.session_id,
     )
+
+    # Persist chat history in MongoDB Atlas / store
+    ticket_num = response.ticket.number if response.ticket else None
+    store.record_chat(
+        session_id=response.session_id,
+        user=user_dict,
+        message=payload.message,
+        reply=response.reply,
+        intent=response.intent,
+        confidence=response.confidence,
+        ticket_number=ticket_num,
+    )
+
+    return response
+
+
+@app.get("/api/chat/history")
+def get_chat_history(session_id: str | None = None) -> list[dict]:
+    """Retrieve saved chat history from MongoDB Atlas / store."""
+    if session_id:
+        return store.chat_sessions.get(session_id, [])
+    return store.chat_history
 
 
 @app.post("/api/intake", response_model=ChatOut)
@@ -120,6 +142,13 @@ def get_ticket(number: str) -> dict:
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
+
+
+@app.get("/api/servicenow/incident/{sys_id_or_number}")
+def get_servicenow_incident(sys_id_or_number: str) -> dict:
+    """Demonstrate 'Get Incident' REST integration against ServiceNow Table API."""
+    record = servicenow.get_incident(sys_id_or_number)
+    return record
 
 
 @app.post("/api/tickets/{number}/actions/{action_id}/execute")
@@ -182,11 +211,15 @@ def create_software_request(payload: CatalogRequestIn) -> dict:
         status="Requested" if decision["approval_required"] else "Provisioning",
     )
 
-    status = "Pending approval" if decision["approval_required"] else "Provisioning"
     events = [
         {"at": now_iso(), "status": "Requested", "detail": f"Requested: {payload.justification}"}
     ]
-    if not decision["approval_required"]:
+    if not decision["eligible"]:
+        status = "Rejected"
+        events.append({"at": now_iso(), "status": "Rejected", "detail": f"Ineligible: {decision['reason']}"})
+    elif decision["approval_required"]:
+        status = "Pending approval"
+    else:
         events.append({"at": now_iso(), "status": "Approved", "detail": "Pre-approved standard tool"})
         events.append({"at": now_iso(), "status": "Provisioning", "detail": "Dispatched via Intune"})
         events.append({"at": now_iso(), "status": "Completed", "detail": "Software installed successfully"})
@@ -279,7 +312,7 @@ def get_dashboard_stats() -> dict:
         "software_requests_total": total_sw,
         "software_requests_completed": completed_sw,
         "automation_rate": auto_rate,
-        "mttr_minutes": 1.4,  # Mean time to resolve via autonomous agent: under 2 minutes
+        "mttr_minutes": 1.4,
         "audit_actions_count": len(store.audit_logs),
     }
 
@@ -298,6 +331,8 @@ def reset_seed() -> dict:
     store.catalog = []
     store.software_requests = []
     store.audit_logs = []
+    store.chat_history = []
+    store.chat_sessions = {}
     store._seed_if_empty()
-    return {"status": "ok", "message": "Store reset and re-seeded successfully."}
-
+    rag._rebuild_index()
+    return {"status": "ok", "message": "Store and FAISS index reset and re-seeded successfully."}

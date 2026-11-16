@@ -17,7 +17,7 @@ STATE_MAP = {"Open": "1", "In Progress": "2", "Pending": "3", "Resolved": "6", "
 
 
 class ServiceNowClient:
-    """Enterprise ServiceNow REST Table API client with seamless Mock fallback."""
+    """ServiceNow REST Table API client with live HTTP calls and resilient mock fallback."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -100,7 +100,7 @@ class ServiceNowClient:
                         number = data.get("number", number)
                         sys_id = data.get("sys_id", sys_id)
                         logger.info(f"Created live ServiceNow incident {number} ({sys_id})")
-                        return {
+                        record = {
                             "mode": "live",
                             "table": "incident",
                             "number": number,
@@ -109,6 +109,9 @@ class ServiceNowClient:
                             "state": state_label,
                             "payload": data,
                         }
+                        self._mock_records[number] = record
+                        self._mock_records[sys_id] = record
+                        return record
             except Exception as exc:
                 logger.warning(f"Live ServiceNow call failed ({exc}), falling back to mock mode.")
 
@@ -122,6 +125,62 @@ class ServiceNowClient:
             "url": url,
             "state": state_label,
             "payload": payload,
+        }
+        self._mock_records[number] = record
+        self._mock_records[sys_id] = record
+        return record
+
+    def get_incident(self, sys_id_or_number: str) -> dict:
+        """Retrieve an Incident from ServiceNow Table API (or mock store)."""
+        if self.is_live:
+            try:
+                headers = {"Accept": "application/json"}
+                auth = None
+                if self.settings.servicenow_token:
+                    headers["Authorization"] = f"Bearer {self.settings.servicenow_token}"
+                else:
+                    auth = (self.settings.servicenow_user, self.settings.servicenow_password)
+
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get(
+                        f"{self.base_url}/incident/{sys_id_or_number}",
+                        headers=headers,
+                        auth=auth,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json().get("result", {})
+                        return {
+                            "mode": "live",
+                            "table": "incident",
+                            "number": data.get("number", sys_id_or_number),
+                            "sys_id": data.get("sys_id", sys_id_or_number),
+                            "url": f"https://{self.instance}.service-now.com/nav_to.do?uri=incident.do?sys_id={sys_id_or_number}",
+                            "state": data.get("state", "Open"),
+                            "payload": data,
+                        }
+            except Exception as exc:
+                logger.warning(f"Live get_incident failed ({exc}); reading from mock.")
+
+        # Return mock record if exists, otherwise build clean mock representation
+        if sys_id_or_number in self._mock_records:
+            return self._mock_records[sys_id_or_number]
+
+        # Generate on-the-fly realistic record
+        number = sys_id_or_number if sys_id_or_number.startswith("INC") else "INC0010042"
+        sys_id = sys_id_or_number if not sys_id_or_number.startswith("INC") else snow_sys_id()
+        record = {
+            "mode": "mock",
+            "table": "incident",
+            "number": number,
+            "sys_id": sys_id,
+            "url": f"https://{self.instance}.service-now.com/nav_to.do?uri=incident.do?sys_id={sys_id}",
+            "state": "Open",
+            "payload": {
+                "short_description": "Network connectivity issue",
+                "category": "network",
+                "priority": "2",
+                "state": "1",
+            },
         }
         self._mock_records[number] = record
         self._mock_records[sys_id] = record
@@ -220,7 +279,7 @@ class ServiceNowClient:
                         data = resp.json().get("result", {})
                         number = data.get("number", number)
                         sys_id = data.get("sys_id", sys_id)
-                        return {
+                        record = {
                             "mode": "live",
                             "table": "sc_request",
                             "number": number,
@@ -229,6 +288,9 @@ class ServiceNowClient:
                             "state": status,
                             "payload": data,
                         }
+                        self._mock_records[number] = record
+                        self._mock_records[sys_id] = record
+                        return record
             except Exception as exc:
                 logger.warning(f"Live sc_request call failed ({exc}); falling back to mock.")
 
@@ -246,3 +308,58 @@ class ServiceNowClient:
         self._mock_records[sys_id] = record
         return record
 
+    def update_service_request(
+        self,
+        sys_id_or_number: str,
+        status: str,
+        work_note: str | None = None,
+    ) -> dict:
+        """Update a ServiceNow Service Request status (e.g. Approved, Provisioning, Completed, Rejected)."""
+        if self.is_live:
+            try:
+                headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                auth = None
+                if self.settings.servicenow_token:
+                    headers["Authorization"] = f"Bearer {self.settings.servicenow_token}"
+                else:
+                    auth = (self.settings.servicenow_user, self.settings.servicenow_password)
+
+                patch_data: dict[str, Any] = {"stage": status}
+                if work_note:
+                    patch_data["work_notes"] = work_note
+
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.patch(
+                        f"{self.base_url}/sc_request/{sys_id_or_number}",
+                        json=patch_data,
+                        headers=headers,
+                        auth=auth,
+                    )
+                    if resp.status_code in (200, 201):
+                        data = resp.json().get("result", {})
+                        return {
+                            "mode": "live",
+                            "table": "sc_request",
+                            "number": data.get("number", sys_id_or_number),
+                            "sys_id": data.get("sys_id", sys_id_or_number),
+                            "url": f"https://{self.instance}.service-now.com/nav_to.do?uri=sc_request.do?sys_id={sys_id_or_number}",
+                            "state": status,
+                            "payload": data,
+                        }
+            except Exception as exc:
+                logger.warning(f"Live update_service_request failed ({exc}); falling back to mock.")
+
+        record = self._mock_records.get(sys_id_or_number, {
+            "mode": "mock",
+            "table": "sc_request",
+            "number": sys_id_or_number if sys_id_or_number.startswith("REQ") else "REQ001245",
+            "sys_id": sys_id_or_number if not sys_id_or_number.startswith("REQ") else snow_sys_id(),
+            "url": f"https://{self.instance}.service-now.com/nav_to.do?uri=sc_request.do?sys_id={sys_id_or_number}",
+            "state": status,
+            "payload": {},
+        })
+        record["state"] = status
+        record["payload"]["stage"] = status
+        if work_note:
+            record["payload"]["work_notes"] = work_note
+        return record

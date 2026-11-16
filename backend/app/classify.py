@@ -248,6 +248,31 @@ def _apply_scope(rule: dict, text: str) -> dict:
     return updated
 
 
+QUESTION_STARTERS = (
+    "how do i", "how can i", "how to", "how should i", "how would i",
+    "what is", "what are", "why does", "why is", "where is",
+    "can you tell me", "can you explain", "explain how",
+    "guide for", "steps to", "troubleshoot", "troubleshooting",
+    "instructions for", "how do we"
+)
+
+ACTIVE_FAILURE_WORDS = (
+    "cannot connect", "can't connect", "keeps failing", "keep failing",
+    "has expired", "is expired", "expired password", "account is locked",
+    "locked out", "error 809", "system crashed", "out of space", "c: drive full"
+)
+
+
+def is_knowledge_query(text: str) -> bool:
+    cleaned = text.strip().lower()
+    if cleaned.endswith("?"):
+        # If it's a question, check if it's explicitly stating a failure
+        return not any(fail in cleaned for fail in ACTIVE_FAILURE_WORDS)
+    if any(cleaned.startswith(starter) for starter in QUESTION_STARTERS):
+        return not any(fail in cleaned for fail in ACTIVE_FAILURE_WORDS)
+    return False
+
+
 def classify_text(text: str, user: dict | None = None) -> dict:
     user = user or {}
     low = text.lower().replace("’", "'")
@@ -304,8 +329,10 @@ def classify_text(text: str, user: dict | None = None) -> dict:
         f"Assignment group is {rule['assignment_group']}. Configuration item is {rule['configuration_item']}. "
         f"Caller location {_location(text, user.get('location', ''))} is taken from the words in the request or the employee profile."
     )
+    intent = "Knowledge Question" if is_knowledge_query(text) else rule["intent"]
+
     return {
-        "intent": rule["intent"],
+        "intent": intent,
         "category": rule["category"],
         "subcategory": rule["subcategory"],
         "priority": rule["priority"],

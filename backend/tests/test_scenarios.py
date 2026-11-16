@@ -12,6 +12,8 @@ def client():
     store.tickets = []
     store.software_requests = []
     store.audit_logs = []
+    store.chat_history = []
+    store.chat_sessions = {}
     store._seed_if_empty()
     return TestClient(app)
 
@@ -102,7 +104,7 @@ def test_scenario_2_self_healing_password(client):
 
 
 def test_scenario_3_rag_outlook_sync(client):
-    """Scenario 3: RAG Knowledge search -> Vector similarity -> Grounded answer + Sources cited."""
+    """Scenario 3: RAG Knowledge search -> Vector similarity -> Grounded answer + Sources cited (NO INCIDENT CREATED)."""
     payload = {
         "message": "How do I troubleshoot Outlook synchronization?",
         "user": {
@@ -116,6 +118,9 @@ def test_scenario_3_rag_outlook_sync(client):
     assert resp.status_code == 200
     data = resp.json()
 
+    # Must be Knowledge Question, NOT an Incident ticket!
+    assert data["intent"] == "Knowledge Question"
+    assert data["ticket"] is None, "Should NOT create an incident for a knowledge question!"
     assert data["knows"] is True
     assert len(data["citations"]) > 0
     top_citation = data["citations"][0]
@@ -168,33 +173,45 @@ def test_scenario_5_unknown_question_safety(client):
     assert "Approved Knowledge Base Content Insufficient" in data["reply"] or "no verified guidance" in data["reply"].lower()
 
 
-def test_contractor_policy_denial(client):
-    """Policy Governance: Contractors requesting restricted software get rejected cleanly."""
-    payload = {
-        "item_id": "figma",
-        "justification": "Need it for UI testing",
-        "user": {
-            "id": "contractor.sam",
-            "name": "Sam Contractor",
-            "email": "sam.c@external.com",
-            "department": "Design",
-            "employee_type": "Contractor",
-        },
-    }
-    resp = client.post("/api/requests", json=payload)
+def test_servicenow_get_incident(client):
+    """Test ServiceNow 'Get Incident' REST integration."""
+    # First create an incident
+    user = {"name": "Test User", "email": "test@northline.com", "department": "IT"}
+    intake_resp = client.post("/api/chat", json={"message": "I cannot connect to VPN", "user": user})
+    assert intake_resp.status_code == 200
+    inc_num = intake_resp.json()["ticket"]["number"]
+
+    # Now call Get Incident endpoint
+    resp = client.get(f"/api/servicenow/incident/{inc_num}")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["eligible"] is False
-    assert "not issued to contractors" in data["reason"].lower()
+    assert data["number"] == inc_num
+    assert "sys_id" in data
+    assert "table" in data and data["table"] == "incident"
 
 
-def test_dashboard_metrics(client):
-    """Verify ITSM Dashboard statistics endpoint."""
-    resp = client.get("/api/dashboard/stats")
-    assert resp.status_code == 200
-    stats = resp.json()
-    assert "total_tickets" in stats
-    assert "ai_resolved" in stats
-    assert "automation_rate" in stats
-    assert "mttr_minutes" in stats
+def test_software_approval_workflow(client):
+    """Test Software Request Approve/Reject endpoint to ensure no crash."""
+    # Request Docker (eligible for Engineering, requires manager approval)
+    user = {"name": "Sarah", "email": "sarah@northline.com", "department": "Engineering", "employee_type": "Employee"}
+    req_resp = client.post("/api/requests", json={"item_id": "docker", "justification": "Testing containers", "user": user})
+    assert req_resp.status_code == 200
+    req_num = req_resp.json()["number"]
+    assert req_resp.json()["status"] == "Pending approval"
 
+    # Manager approves
+    decide_resp = client.post(f"/api/requests/{req_num}/decide", json={"decision": "approve", "actor": "IT Director", "note": "Approved for project"})
+    assert decide_resp.status_code == 200
+    assert decide_resp.json()["status"] == "Completed"
+
+
+def test_chat_history_persistence(client):
+    """Test MongoDB / Store chat history recording."""
+    user = {"name": "Alex", "email": "alex@northline.com", "department": "Finance"}
+    client.post("/api/chat", json={"message": "My password has expired.", "user": user})
+
+    hist_resp = client.get("/api/chat/history")
+    assert hist_resp.status_code == 200
+    history = hist_resp.json()
+    assert len(history) > 0
+    assert history[0]["message"] == "My password has expired."

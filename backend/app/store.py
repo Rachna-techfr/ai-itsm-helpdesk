@@ -14,7 +14,7 @@ logger = logging.getLogger("store")
 
 
 class DataStore:
-    """Enterprise Data Store supporting MongoDB Atlas with seamless offline JSON fallback."""
+    """Data Store supporting MongoDB Atlas with seamless offline JSON fallback and chat history."""
 
     def __init__(self, settings: Settings, embedder: Embedder):
         self.settings = settings
@@ -31,6 +31,7 @@ class DataStore:
         self.catalog: list[dict] = []
         self.software_requests: list[dict] = []
         self.audit_logs: list[dict] = []
+        self.chat_history: list[dict] = []
         self.chat_sessions: dict[str, list[dict]] = {}
 
         self._init_backend()
@@ -42,7 +43,7 @@ class DataStore:
                 from pymongo import MongoClient
 
                 self.mongo_client = MongoClient(self.settings.mongodb_uri, serverSelectionTimeoutMS=3000)
-                # Verify connection
+                # Verify connection with ping
                 self.mongo_client.admin.command("ping")
                 self.db = self.mongo_client[self.settings.mongodb_db]
                 self.use_mongo = True
@@ -65,6 +66,7 @@ class DataStore:
                     self.catalog = data.get("catalog", [])
                     self.software_requests = data.get("software_requests", [])
                     self.audit_logs = data.get("audit_logs", [])
+                    self.chat_history = data.get("chat_history", [])
                     self.chat_sessions = data.get("chat_sessions", {})
                 logger.info("Loaded state from local store.json")
             except Exception as exc:
@@ -79,13 +81,12 @@ class DataStore:
         self.catalog = list(self.db.software_catalog.find({}, {"_id": 0}))
         self.software_requests = list(self.db.software_requests.find({}, {"_id": 0}))
         self.audit_logs = list(self.db.audit_logs.find({}, {"_id": 0}))
+        self.chat_history = list(self.db.chat_history.find({}, {"_id": 0}).sort("timestamp", -1).limit(100))
 
     def save(self) -> None:
-        """Persist data to MongoDB or local JSON file."""
+        """Persist data to MongoDB Atlas or local JSON file."""
         if self.use_mongo and self.db is not None:
             try:
-                # Upsert / replace documents in Mongo collections
-                # For simplicity and speed in prototype, synchronize collections
                 for col_name, data_list in [
                     ("tickets", self.tickets),
                     ("kb_articles", self.articles),
@@ -112,12 +113,49 @@ class DataStore:
                 "catalog": self.catalog,
                 "software_requests": self.software_requests,
                 "audit_logs": self.audit_logs,
+                "chat_history": self.chat_history[-200:],  # keep last 200 turns
                 "chat_sessions": self.chat_sessions,
             }
             with open(self.storage_file, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
         except Exception as exc:
             logger.error("Failed to save local store.json: %s", exc)
+
+    def record_chat(
+        self,
+        session_id: str,
+        user: dict,
+        message: str,
+        reply: str,
+        intent: str,
+        confidence: float,
+        ticket_number: str | None = None,
+    ) -> dict:
+        """Record chat interaction to MongoDB Atlas and local memory."""
+        turn = {
+            "id": nid(),
+            "session_id": session_id,
+            "timestamp": now_iso(),
+            "user_id": user.get("id", "emma.walsh"),
+            "user_name": user.get("name", "Emma Walsh"),
+            "department": user.get("department", "Engineering"),
+            "message": message,
+            "reply": reply,
+            "intent": intent,
+            "confidence": confidence,
+            "ticket_number": ticket_number,
+        }
+        self.chat_history.insert(0, turn)
+        self.chat_sessions.setdefault(session_id, []).append(turn)
+
+        if self.use_mongo and self.db is not None:
+            try:
+                self.db.chat_history.insert_one(dict(turn))
+            except Exception as exc:
+                logger.warning("Failed to save chat to MongoDB: %s", exc)
+
+        self.save()
+        return turn
 
     def _seed_if_empty(self) -> None:
         if not self.articles:
@@ -133,7 +171,6 @@ class DataStore:
             self.chunks = raw_chunks
 
         if not self.tickets:
-            # Seed 2 realistic initial demo tickets
             self.tickets = [
                 {
                     "number": "INC0010021",
@@ -281,4 +318,3 @@ class DataStore:
         self.audit_logs.insert(0, entry)
         self.save()
         return entry
-
