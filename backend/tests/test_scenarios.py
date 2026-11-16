@@ -215,3 +215,69 @@ def test_chat_history_persistence(client):
     history = hist_resp.json()
     assert len(history) > 0
     assert history[0]["message"] == "My password has expired."
+
+
+def test_chat_contractor_figma_denial(client):
+    """Chat path: Contractor requesting Figma must be Rejected, not Completed."""
+    contractor = {
+        "id": "c.bob",
+        "name": "Bob Contractor",
+        "email": "bob@external.com",
+        "department": "Design",
+        "employee_type": "Contractor",
+    }
+    resp = client.post("/api/chat", json={"message": "I need Figma installed on my laptop", "user": contractor})
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["intent"] == "Service Request"
+    req = data.get("software_request")
+    assert req is not None
+    assert req["eligible"] is False
+    assert req["status"] == "Rejected"
+    assert "Rejected" in data["reply"]
+
+
+def test_generic_messages_do_not_provision_vscode(client):
+    """Generic messages must never arbitrarily provision Visual Studio Code."""
+    user = {"name": "Jordan", "email": "jordan@northline.com", "department": "Finance"}
+
+    # Case A: Shared folder access
+    resp1 = client.post("/api/chat", json={"message": "I need access to the shared finance folder", "user": user})
+    assert resp1.status_code == 200
+    assert resp1.json().get("software_request") is None, "Folder access must not trigger VS Code provisioning!"
+
+    # Case B: VPN install question
+    resp2 = client.post("/api/chat", json={"message": "How do I install the VPN client at home?", "user": user})
+    assert resp2.status_code == 200
+    assert resp2.json().get("software_request") is None, "VPN install question must not trigger VS Code provisioning!"
+    assert resp2.json()["intent"] == "Knowledge Question"
+
+
+def test_cannot_approve_rejected_or_completed_request(client):
+    """Decide endpoint must reject approving already Rejected or Completed requests."""
+    # 1. Submit an ineligible request (rejected)
+    contractor = {"name": "Bob", "email": "bob@external.com", "department": "Design", "employee_type": "Contractor"}
+    req_resp = client.post("/api/requests", json={"item_id": "figma", "justification": "Need design tool", "user": contractor})
+    assert req_resp.status_code == 200
+    req_num = req_resp.json()["number"]
+    assert req_resp.json()["status"] == "Rejected"
+
+    # 2. Try to approve the rejected request
+    decide_resp = client.post(f"/api/requests/{req_num}/decide", json={"decision": "approve", "actor": "Manager"})
+    assert decide_resp.status_code == 400
+    assert "Cannot decide request" in decide_resp.json()["detail"]
+
+
+def test_ticket_counter_monotonically_increases(client):
+    """Ticket numbers must never repeat across runs or requests."""
+    user = {"name": "User 1", "email": "u1@northline.com", "department": "IT"}
+    r1 = client.post("/api/chat", json={"message": "I cannot connect to VPN", "user": user})
+    num1 = r1.json()["ticket"]["number"]
+
+    r2 = client.post("/api/chat", json={"message": "I cannot connect to VPN network", "user": user})
+    num2 = r2.json()["ticket"]["number"]
+
+    assert num1 != num2
+    assert int(num2.replace("INC", "")) > int(num1.replace("INC", ""))
+

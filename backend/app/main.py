@@ -35,6 +35,7 @@ settings = load_settings()
 embedder = Embedder(backend=settings.embedding_backend)
 servicenow = ServiceNowClient(settings)
 store = DataStore(settings, embedder)
+servicenow.sync_counters_from_store(store.tickets, store.software_requests)
 rag = RAGEngine(settings, embedder, store)
 agent = HelpdeskAgent(settings, store, rag, servicenow)
 
@@ -255,6 +256,12 @@ def decide_software_request(number: str, payload: DecideIn) -> dict:
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
 
+    if req.get("status") not in ("Pending approval", "Requested"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot decide request {number} because current status is '{req.get('status')}'. Only 'Pending approval' or 'Requested' requests can be approved or rejected.",
+        )
+
     if payload.decision == "approve":
         req["status"] = "Completed"
         req["timeline"].append({"at": now_iso(), "status": "Approved", "detail": f"Approved by {payload.actor}: {payload.note}"})
@@ -335,4 +342,7 @@ def reset_seed() -> dict:
     store.chat_sessions = {}
     store._seed_if_empty()
     rag._rebuild_index()
+    servicenow._inc_counter = 10042
+    servicenow._req_counter = 1245
+    servicenow.sync_counters_from_store(store.tickets, store.software_requests)
     return {"status": "ok", "message": "Store and FAISS index reset and re-seeded successfully."}

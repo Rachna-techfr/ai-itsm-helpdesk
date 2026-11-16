@@ -53,10 +53,15 @@ class HelpdeskAgent:
         department = user.get("department", "Engineering")
         location = user.get("location", "Austin HQ")
 
-        # 1. First, check if message is a Software Provisioning request
+        # 1. Check for Software Provisioning:
+        # First, check if a specific catalog item was requested
         software_item = self._match_software_catalog(message)
-        if software_item or self._is_software_request(message):
+        if software_item:
             return self._handle_software_provisioning(message, user, session_id, software_item)
+
+        # Check if generic software catalog request without naming an app
+        if self._is_generic_software_inquiry(message):
+            return self._handle_generic_software_prompt(session_id)
 
         # 2. Run Classification and RAG Search in parallel
         cls = classify_text(message, user)
@@ -72,13 +77,33 @@ class HelpdeskAgent:
                 message, user, session_id, cls, search_res, playbook_id, playbook
             )
 
-        # 4. Check for Scenario 1: Intelligent Ticket Intake (e.g. VPN issue or failure requiring ticket)
+        # 4. Check for Knowledge Question (Scenario 3: RAG)
+        # If classified as Knowledge Question or if query is phrased as a question
+        if cls.get("intent") == "Knowledge Question":
+            answer_text, provider_label, narrative_source = self.rag.answer(message, search_res)
+            return ChatOut(
+                session_id=session_id,
+                intent="Knowledge Question" if search_res.knows else "Unknown / Out of Scope",
+                reply=answer_text,
+                confidence=search_res.confidence,
+                knows=search_res.knows,
+                offer_ticket=True,
+                provider_label=provider_label,
+                narrative_source=narrative_source,
+                citations=search_res.results,
+                classification=self._to_classification_out(cls),
+                proposed_actions=[],
+                auto_resolved=False,
+                escalated=not search_res.knows,
+            )
+
+        # 5. Check for Scenario 1: Intelligent Ticket Intake (e.g. VPN issue or failure requiring ticket)
         if cls["intent"] == "Incident" and cls["confidence"] >= 0.70:
             return self._handle_incident_intake(
                 message, user, session_id, cls, search_res, playbook_id, playbook
             )
 
-        # 5. Check for Knowledge Question (Scenario 3: RAG)
+        # 6. Fallback: If knowledge search has high confidence, treat as knowledge
         if search_res.knows:
             answer_text, provider_label, narrative_source = self.rag.answer(message, search_res)
             return ChatOut(
@@ -97,7 +122,7 @@ class HelpdeskAgent:
                 escalated=False,
             )
 
-        # 6. Scenario 5: Unknown Question / No Hallucination / Escalation
+        # 7. Scenario 5: Unknown Question / No Hallucination / Escalation
         answer_text, provider_label, narrative_source = self.rag.answer(message, search_res)
         return ChatOut(
             session_id=session_id,
@@ -116,27 +141,60 @@ class HelpdeskAgent:
         )
 
     def _match_software_catalog(self, text: str) -> dict | None:
-        """Find matching catalog item from text."""
+        """Find matching catalog item using word boundary regex matching."""
         low = text.lower()
         for item in self.store.catalog:
             for alias in item.get("aliases", []):
-                if alias in low:
+                pattern = r"\b" + re.escape(alias) + r"\b"
+                if re.search(pattern, low):
                     return item
         return None
 
-    def _is_software_request(self, text: str) -> bool:
+    def _is_generic_software_inquiry(self, text: str) -> bool:
+        """Check if user explicitly asks for software without naming a specific app."""
         low = text.lower()
-        triggers = ["install", "provision", "need software", "access to", "license for", "software catalog"]
-        return any(trig in low for trig in triggers)
+        generic_triggers = [
+            "software catalog", "request software", "install software",
+            "need software", "order software", "what software is available",
+            "list of software", "request application"
+        ]
+        return any(trig in low for trig in generic_triggers)
+
+    def _handle_generic_software_prompt(self, session_id: str) -> ChatOut:
+        """Prompt user with the software catalog options instead of arbitrarily defaulting."""
+        catalog_lines = []
+        for it in self.store.catalog:
+            catalog_lines.append(f"• **{it['name']}** — {it['approval_reason']}")
+        list_str = "\n".join(catalog_lines)
+
+        reply = (
+            "📦 **Enterprise Software Catalog**\n\n"
+            "Which application would you like to request? Here are the approved catalog items:\n\n"
+            f"{list_str}\n\n"
+            "Please reply with the application name (e.g., *'I need Visual Studio Code'* or *'I need Docker Desktop'*)."
+        )
+        return ChatOut(
+            session_id=session_id,
+            intent="Service Request",
+            reply=reply,
+            confidence=0.95,
+            knows=True,
+            offer_ticket=False,
+            provider_label="Service Catalog",
+            narrative_source="ServiceNow Service Catalog",
+            citations=[],
+            classification=None,
+            ticket=None,
+            proposed_actions=[],
+            auto_resolved=False,
+            software_request=None,
+            escalated=False,
+        )
 
     def _handle_software_provisioning(
-        self, message: str, user: dict, session_id: str, item: dict | None
+        self, message: str, user: dict, session_id: str, item: dict
     ) -> ChatOut:
-        """Scenario 4: Software Provisioning Automation."""
-        if not item:
-            # Fallback to VS Code if generic install request
-            item = next((it for it in self.store.catalog if it["id"] == "vscode"), self.store.catalog[0])
-
+        """Scenario 4: Software Provisioning Automation with strict eligibility and approval gating."""
         decision = software_decision(item, user)
         eligible = decision["eligible"]
         approval_req = decision["approval_required"]
@@ -145,34 +203,67 @@ class HelpdeskAgent:
         requester_name = user.get("name", "Emma Walsh")
         requester_email = user.get("email", "emma.walsh@northline.com")
         department = user.get("department", "Engineering")
+        emp_type = user.get("employee_type", "Employee")
 
-        # Create ServiceNow Request
+        events: list[RequestEvent] = [
+            RequestEvent(at=now_iso(), status="Requested", detail=f"Request received: {message}")
+        ]
+
+        if not eligible:
+            # Case 1: Ineligible (e.g. Contractor asking for Figma or wrong department)
+            initial_status = "Rejected"
+            events.append(RequestEvent(at=now_iso(), status="Rejected", detail=f"Policy Denied: {reason}"))
+            snow_status = "Rejected"
+
+            reply = (
+                f"❌ **Software Request Denied (Policy Ineligible)**\n\n"
+                f"- **Software:** {item['name']}\n"
+                f"- **Requester:** {requester_name} ({emp_type}, {department})\n"
+                f"- **Status:** `Rejected`\n"
+                f"- **Policy Reason:** {reason}\n\n"
+                f"In accordance with corporate IT governance and vendor licensing agreements, this application cannot be provisioned for your employee profile. "
+                f"If you require an exception, your department manager must submit a security policy deviation request."
+            )
+        elif approval_req:
+            # Case 2: Requires Manager/Director Approval (e.g. Docker, Figma, Tableau)
+            initial_status = "Pending approval"
+            events.append(RequestEvent(at=now_iso(), status="Pending approval", detail=f"Awaiting manager sign-off: {reason}"))
+            snow_status = "Requested"
+
+            reply = (
+                f"⏳ **Software Request Submitted for Approval**\n\n"
+                f"- **Software:** {item['name']}\n"
+                f"- **Requester:** {requester_name} ({department})\n"
+                f"- **Status:** `Pending approval`\n"
+                f"- **Approval Policy:** {reason}\n\n"
+                f"A ServiceNow catalog request has been created and dispatched to your line manager for review. "
+                f"Once approved, deployment will begin automatically via Microsoft Intune."
+            )
+        else:
+            # Case 3: Pre-approved / Free (e.g. VS Code for Engineering)
+            initial_status = "Completed"
+            events.append(RequestEvent(at=now_iso(), status="Approved", detail="Auto-approved per catalog policy (Pre-approved/Free)"))
+            events.append(RequestEvent(at=now_iso(), status="Provisioning", detail="Intune silent installation dispatched to endpoint"))
+            events.append(RequestEvent(at=now_iso(), status="Completed", detail=f"{item['name']} successfully installed on laptop"))
+            snow_status = "Completed"
+
+            reply = (
+                f"📦 **Software Provisioning Completed**\n\n"
+                f"- **Software:** {item['name']}\n"
+                f"- **Status:** `Completed`\n"
+                f"- **Policy Decision:** {reason}\n\n"
+                f"The installation package has been deployed to your laptop via Microsoft Intune."
+            )
+
+        # Create ServiceNow Request matching the real status
         snow_req = self.servicenow.create_service_request(
             item_name=item["name"],
             requester_name=requester_name,
             requester_email=requester_email,
             department=department,
             justification=message,
-            status="Requested" if approval_req else "Provisioning",
+            status=snow_status,
         )
-
-        initial_status = "Pending approval" if approval_req else "Provisioning"
-        events = [
-            RequestEvent(at=now_iso(), status="Requested", detail=f"Request received: {message}"),
-        ]
-
-        if not approval_req:
-            events.append(
-                RequestEvent(at=now_iso(), status="Approved", detail="Auto-approved per catalog policy (Free/Pre-approved)")
-            )
-            events.append(
-                RequestEvent(at=now_iso(), status="Provisioning", detail="Intune silent installation dispatched to endpoint")
-            )
-            # If fast demo mode, mark completed
-            events.append(
-                RequestEvent(at=now_iso(), status="Completed", detail=f"{item['name']} successfully installed on laptop")
-            )
-            initial_status = "Completed"
 
         req_record = {
             "number": snow_req["number"],
@@ -198,15 +289,6 @@ class HelpdeskAgent:
 
         self.store.software_requests.insert(0, req_record)
         self.store.save()
-
-        reply = (
-            f"📦 **Software Provisioning Initialized**\n\n"
-            f"- **Software:** {item['name']}\n"
-            f"- **ServiceNow Request:** [{snow_req['number']}]({snow_req['url']})\n"
-            f"- **Status:** `{initial_status}`\n"
-            f"- **Policy Decision:** {reason}\n\n"
-            f"The installation package has been scheduled via Microsoft Intune."
-        )
 
         snow_out = SnowOut(
             mode=snow_req.get("mode", "mock"),
@@ -276,7 +358,6 @@ class HelpdeskAgent:
         department = user.get("department", "Engineering")
         location = user.get("location", "Austin HQ")
 
-        # 7-Step Self-Heal Execution
         executed_steps: list[StepOut] = []
         step_definitions = playbook.get("steps", [])
 
@@ -291,7 +372,6 @@ class HelpdeskAgent:
                 )
             )
 
-        # Create Incident in ServiceNow as Resolved
         work_notes = "\n".join([f"[{s.name}] {s.result}" for s in executed_steps])
         resolution_notes = f"Self-healing playbook '{playbook['title']}' executed automatically. Verified resolution."
 
@@ -312,7 +392,6 @@ class HelpdeskAgent:
             resolution_notes=resolution_notes,
         )
 
-        # Record in Audit Log (Mandatory for capability 2)
         self.store.record_audit(
             ticket_number=snow_inc["number"],
             playbook_id=playbook_id,
@@ -417,18 +496,13 @@ class HelpdeskAgent:
     ) -> ChatOut:
         """
         Scenario 1: Intelligent Ticket Intake
-        Employee enters: “I cannot connect to VPN since this morning. Authentication keeps failing.”
-        AI outputs:
-        Intent: Incident, Category/Sub-category: Network / VPN, Priority: P2, Impact/Urgency: Individual / High,
-        Assignment Group: Network Support, Summary: VPN authentication failure, Suggested Resolution: VPN troubleshooting
-        Create an Incident in ServiceNow using the AI-generated information.
+        Maps AI fields into ServiceNow Incident and creates record.
         """
         caller_name = user.get("name", "Emma Walsh")
         caller_email = user.get("email", "emma.walsh@northline.com")
         department = user.get("department", "Engineering")
         location = user.get("location", "Austin HQ")
 
-        # Create Incident in ServiceNow
         snow_inc = self.servicenow.create_incident(
             summary=cls["summary"],
             description=message,
@@ -548,7 +622,6 @@ class HelpdeskAgent:
         if not playbook:
             raise ValueError(f"Playbook {target_action['playbook_id']} not found.")
 
-        # Execute steps
         for st_def, st_out in zip(playbook.get("steps", []), target_action.get("steps", [])):
             st_out["status"] = "success"
             st_out["result"] = st_def.get("result_if_run", "Executed successfully.")
@@ -561,7 +634,6 @@ class HelpdeskAgent:
         ticket["ai_resolved"] = True
         ticket["updated_at"] = now_iso()
 
-        # Update ServiceNow
         self.servicenow.update_incident(
             ticket["servicenow"]["sys_id"],
             {"state": "6", "close_code": "Solved (Permanently)", "close_notes": ticket["resolution_notes"]},
@@ -569,7 +641,6 @@ class HelpdeskAgent:
         )
         ticket["servicenow"]["state"] = "Resolved"
 
-        # Record Audit
         self.store.record_audit(
             ticket_number=ticket_number,
             playbook_id=target_action["playbook_id"],
@@ -617,4 +688,3 @@ class HelpdeskAgent:
 
     def _to_ticket_out(self, t: dict) -> TicketOut:
         return TicketOut.model_validate(t)
-

@@ -36,6 +36,24 @@ class ServiceNowClient:
         self._req_counter += 1
         return f"REQ00{self._req_counter}"
 
+    def sync_counters_from_store(self, tickets: list[dict], requests: list[dict]) -> None:
+        """Seed incident and request counters from highest numbers in store so numbers never repeat across server restarts."""
+        import re
+        for t in tickets:
+            num = t.get("number", "")
+            match = re.search(r"INC0*(\d+)", num)
+            if match:
+                val = int(match.group(1))
+                if val > self._inc_counter:
+                    self._inc_counter = val
+        for r in requests:
+            num = r.get("number", "")
+            match = re.search(r"REQ0*(\d+)", num)
+            if match:
+                val = int(match.group(1))
+                if val > self._req_counter:
+                    self._req_counter = val
+
     def create_incident(
         self,
         summary: str,
