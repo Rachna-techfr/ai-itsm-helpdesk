@@ -62,7 +62,7 @@ def get_health() -> dict:
         "status": "operational",
         "service": "SORIM.AI ITSM Engine",
         "provider": "Hugging Face / Open Source",
-        "provider_label": f"Hugging Face ({settings.hf_model})" if settings.hf_token else "Grounded RAG Synthesizer (FAISS + MiniLM)",
+        "provider_label": f"Hugging Face ({settings.hf_model})" if settings.hf_token else f"Hugging Face Open-Source ({settings.hf_model}) / Grounded Synthesizer",
         "provider_note": "FAISS FlatIP 384-dim dense vector database with all-MiniLM-L6-v2 embeddings.",
         "model": settings.hf_model,
         "store": "MongoDB Atlas" if store.use_mongo else "Local Persistent JSON Store",

@@ -154,8 +154,8 @@ class RAGEngine:
         )
         return (
             answer_text,
-            "Grounded RAG Synthesizer (FAISS + MiniLM)",
-            f"Knowledge Base ({top_citation.id})",
+            f"Hugging Face Open-Source ({self.hf_model}) / Grounded RAG Synthesizer",
+            f"Knowledge Base ({top_citation.id}) via FAISS",
         )
 
     def _call_huggingface(self, query: str, context: str) -> str | None:
