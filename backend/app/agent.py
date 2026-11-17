@@ -53,6 +53,23 @@ class HelpdeskAgent:
         department = user.get("department", "Engineering")
         location = user.get("location", "Austin HQ")
 
+        # 0. Check for Explicit Escalation / Manual Ticket Creation Request
+        low_msg = message.lower().strip()
+        is_explicit_ticket_req = any(
+            low_msg.startswith(prefix)
+            for prefix in [
+                "open support ticket",
+                "create servicenow ticket",
+                "open ticket",
+                "create ticket",
+                "raise ticket",
+                "escalate to human",
+                "escalate ticket",
+            ]
+        )
+        if is_explicit_ticket_req:
+            return self._handle_manual_ticket_escalation(message, user, session_id)
+
         # 1. Check for Software Provisioning:
         # First, check if a specific catalog item was requested
         software_item = self._match_software_catalog(message)
@@ -137,6 +154,143 @@ class HelpdeskAgent:
             classification=self._to_classification_out(cls),
             proposed_actions=[],
             auto_resolved=False,
+            escalated=True,
+        )
+
+    def _handle_manual_ticket_escalation(
+        self, message: str, user: dict, session_id: str
+    ) -> ChatOut:
+        """Handle explicit request to open a ServiceNow incident when employee requests human support."""
+        caller_name = user.get("name", "Emma Walsh")
+        caller_email = user.get("email", "emma.walsh@northline.com")
+        department = user.get("department", "Engineering")
+        location = user.get("location", "Austin HQ")
+
+        # Clean subject
+        clean_desc = re.sub(
+            r"^(open support ticket|create servicenow ticket|open ticket|create ticket|raise ticket)[:\s\-]*",
+            "",
+            message,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not clean_desc or len(clean_desc) < 3:
+            clean_desc = "Employee requested human Tier-2 IT support escalation from Self-Service portal."
+
+        summary = f"Escalated Support Request: {clean_desc[:60]}"
+
+        snow_inc = self.servicenow.create_incident(
+            summary=summary,
+            description=clean_desc,
+            category="IT Service Desk",
+            subcategory="Escalation",
+            priority="P2",
+            urgency="High",
+            impact="Individual",
+            assignment_group="Tier-2 Enterprise Support",
+            caller_name=caller_name,
+            caller_email=caller_email,
+            configuration_item="Workplace IT Services",
+            work_notes="Employee requested human support from self-service portal. Escalated directly to Tier-2 Enterprise Support queue.",
+            resolved=False,
+        )
+
+        self.store.record_audit(
+            ticket_number=snow_inc["number"],
+            playbook_id="human_escalation",
+            actor=caller_name,
+            action="Create ServiceNow Incident",
+            policy="human_escalation",
+            confidence=1.0,
+            status="success",
+            details=f"Employee requested human support. Created ServiceNow Incident {snow_inc['number']} assigned to Tier-2 Enterprise Support.",
+        )
+
+        timeline = [
+            TimelineOut(id=nid(), at=now_iso(), actor=caller_name, action="Intake", detail=f"Employee requested human support: {clean_desc}"),
+            TimelineOut(id=nid(), at=now_iso(), actor="ServiceNow Integration", action="Created Incident", detail=f"Dispatched to ServiceNow Table API ({snow_inc['number']}) as New / P2"),
+            TimelineOut(id=nid(), at=now_iso(), actor="Routing Engine", action="Assigned", detail="Assigned to Tier-2 Enterprise Support queue"),
+        ]
+
+        ticket_record = {
+            "number": snow_inc["number"],
+            "caller_name": caller_name,
+            "caller_email": caller_email,
+            "department": department,
+            "location": location,
+            "channel": "Employee portal",
+            "status": "Escalated",
+            "description": clean_desc,
+            "classification": {
+                "intent": "Incident",
+                "category": "IT Service Desk",
+                "subcategory": "Escalation",
+                "priority": "P2",
+                "urgency": "High",
+                "impact": "Individual",
+                "assignment_group": "Tier-2 Enterprise Support",
+                "configuration_item": "Workplace IT Services",
+                "summary": summary,
+                "suggested_resolution": "Tier-2 IT support engineer to contact caller via Teams/email to investigate.",
+                "entities": {
+                    "application": "Workplace IT Services",
+                    "error_text": "Human specialist escalation requested",
+                    "user": caller_name,
+                    "location": location,
+                },
+                "confidence": 1.0,
+                "rationale": "Direct employee request for human IT support escalation.",
+            },
+            "servicenow": snow_inc,
+            "timeline": [t.model_dump() for t in timeline],
+            "actions": [],
+            "citations": [],
+            "duplicate_of": None,
+            "duplicate_score": None,
+            "resolution_notes": None,
+            "resolution_mode": "escalation",
+            "ai_resolved": False,
+            "kb_draft_id": None,
+            "escalation_reason": "Employee requested human Tier-2 specialist",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+
+        self.store.tickets.insert(0, ticket_record)
+        if self.store.use_mongo and self.store.db is not None:
+            try:
+                self.store.db.tickets.insert_one(dict(ticket_record))
+            except Exception as exc:
+                logger.warning("Failed to save escalated ticket to MongoDB: %s", exc)
+        self.store.save()
+
+        ticket_out = self._to_ticket_out(ticket_record)
+
+        reply = (
+            f"✅ **ServiceNow Incident Created & Dispatched**\n\n"
+            f"I have created a ServiceNow Incident ticket for our IT Service Desk team to assist you:\n\n"
+            f"- **Incident Number:** **[{snow_inc['number']}]({snow_inc['url']})**\n"
+            f"- **State:** `New`\n"
+            f"- **Caller:** {caller_name} ({department})\n"
+            f"- **Priority:** `P2 - High` (Urgency: High)\n"
+            f"- **Assignment Group:** Tier-2 Enterprise Support\n\n"
+            f"A dedicated IT support specialist from **Tier-2 Enterprise Support** has been notified and will contact you shortly."
+        )
+
+        return ChatOut(
+            session_id=session_id,
+            intent="Incident",
+            reply=reply,
+            confidence=1.0,
+            knows=True,
+            offer_ticket=False,
+            provider_label="ServiceNow Table API Integration",
+            narrative_source="ServiceNow Table API",
+            citations=[],
+            classification=self._to_classification_out(ticket_record["classification"]),
+            ticket=ticket_out,
+            proposed_actions=[],
+            auto_resolved=False,
+            software_request=None,
             escalated=True,
         )
 

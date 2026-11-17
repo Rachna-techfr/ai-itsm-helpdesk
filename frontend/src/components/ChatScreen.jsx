@@ -58,7 +58,16 @@ const SCENARIOS = [
   },
 ];
 
+const PERSONAS = [
+  { id: 'emma.walsh', name: 'Emma Walsh', email: 'emma.walsh@northline.com', title: 'Product Engineer', department: 'Engineering', location: 'Austin HQ', employee_type: 'Employee' },
+  { id: 'sarah.chen', name: 'Sarah Chen', email: 'sarah.chen@northline.com', title: 'Account Executive', department: 'Sales', location: 'London Office', employee_type: 'Employee' },
+  { id: 'alex.rivera', name: 'Alex Rivera', email: 'alex.rivera@northline.com', title: 'Marketing Specialist', department: 'Marketing', location: 'New York HQ', employee_type: 'Employee' },
+  { id: 'marcus.vance', name: 'Marcus Vance', email: 'marcus.vance@northline.com', title: 'DevOps Lead', department: 'Engineering', location: 'Seattle', employee_type: 'Employee' },
+  { id: 'bob.contractor', name: 'Bob Martinez', email: 'bob.contractor@external.northline.com', title: 'UX Contractor', department: 'Marketing', location: 'Remote', employee_type: 'Contractor' },
+];
+
 export default function ChatScreen({ onTicketCreated }) {
+  const [currentUser, setCurrentUser] = useState(PERSONAS[0]);
   const [messages, setMessages] = useState([
     {
       id: 'welcome',
@@ -97,7 +106,7 @@ export default function ChatScreen({ onTicketCreated }) {
     setLoading(true);
 
     try {
-      const data = await sendChat(text);
+      const data = await sendChat(text, currentUser);
       const botMsg = {
         id: (Date.now() + 1).toString(),
         sender: 'bot',
@@ -171,12 +180,43 @@ export default function ChatScreen({ onTicketCreated }) {
         borderRadius: '12px',
         padding: '0.875rem 1.25rem',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', fontWeight: 700, color: '#38bdf8' }}>
             <Sparkles size={16} />
             <span>MANDATORY LIVE DEMONSTRATION SCENARIOS (CLICK TO TEST):</span>
           </div>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Auto-populates and tests live backend pipeline</span>
+
+          {/* Logged In Employee Persona Switcher */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <User size={13} style={{ color: '#38bdf8' }} />
+              <strong>SSO Caller Persona:</strong>
+            </span>
+            <select
+              value={currentUser.id}
+              onChange={(e) => {
+                const selected = PERSONAS.find((p) => p.id === e.target.value);
+                if (selected) setCurrentUser(selected);
+              }}
+              style={{
+                backgroundColor: 'var(--bg-card)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                borderRadius: '6px',
+                padding: '0.25rem 0.6rem',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              {PERSONAS.map((p) => (
+                <option key={p.id} value={p.id} style={{ backgroundColor: '#1e293b', color: '#fff' }}>
+                  {p.name} ({p.department} • {p.employee_type})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '0.6rem' }}>
@@ -276,6 +316,26 @@ export default function ChatScreen({ onTicketCreated }) {
                   <div style={{ whiteSpace: 'pre-wrap' }}>
                     {msg.text}
                   </div>
+
+                  {/* AI Provider & Inference Engine Badge */}
+                  {data?.provider_label && (
+                    <div style={{
+                      marginTop: '0.6rem',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      fontSize: '0.72rem',
+                      color: '#38bdf8',
+                      backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      borderRadius: '6px',
+                      padding: '0.2rem 0.55rem',
+                      fontWeight: 600,
+                    }}>
+                      <Sparkles size={13} style={{ color: '#38bdf8' }} />
+                      <span>Inference Engine: {data.provider_label}</span>
+                    </div>
+                  )}
 
                   {/* STRUCTURED CARD: Intelligent Ticket Intake (Scenario 1) */}
                   {cls && !data?.auto_resolved && ticket && (
@@ -529,7 +589,7 @@ export default function ChatScreen({ onTicketCreated }) {
                         <span>Need further assistance from a human support specialist?</span>
                       </div>
                       <button
-                        onClick={() => handleSend(`Open support ticket: ${msg.text.slice(0, 50)}`)}
+                        onClick={() => handleSend('Open support ticket: Requesting Tier-2 IT support specialist')}
                         style={{
                           backgroundColor: '#ef4444',
                           color: '#fff',
