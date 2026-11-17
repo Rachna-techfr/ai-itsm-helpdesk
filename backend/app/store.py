@@ -42,7 +42,7 @@ class DataStore:
             try:
                 from pymongo import MongoClient
 
-                self.mongo_client = MongoClient(self.settings.mongodb_uri, serverSelectionTimeoutMS=3000)
+                self.mongo_client = MongoClient(self.settings.mongodb_uri, serverSelectionTimeoutMS=20000)
                 # Verify connection with ping
                 self.mongo_client.admin.command("ping")
                 self.db = self.mongo_client[self.settings.mongodb_db]
