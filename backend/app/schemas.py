@@ -54,6 +54,8 @@ class EntityOut(BaseModel):
 
 
 class ClassificationOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     intent: str
     category: str
     subcategory: str
@@ -64,7 +66,7 @@ class ClassificationOut(BaseModel):
     configuration_item: str
     summary: str
     suggested_resolution: str
-    entities: EntityOut
+    entities: EntityOut = Field(default_factory=EntityOut)
     confidence: float
     rationale: str
 

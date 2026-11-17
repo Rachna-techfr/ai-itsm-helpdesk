@@ -129,7 +129,7 @@ def intake_endpoint(payload: IntakeIn) -> ChatOut:
     )
 
 
-@app.get("/api/tickets", response_model=list[TicketOut])
+@app.get("/api/tickets")
 def list_tickets(status: str | None = Query(None)) -> list[dict]:
     tickets = store.tickets
     if status and status != "All":
@@ -137,7 +137,7 @@ def list_tickets(status: str | None = Query(None)) -> list[dict]:
     return tickets
 
 
-@app.get("/api/tickets/{number}", response_model=TicketOut)
+@app.get("/api/tickets/{number}")
 def get_ticket(number: str) -> dict:
     ticket = next((t for t in store.tickets if t.get("number") == number), None)
     if not ticket:
