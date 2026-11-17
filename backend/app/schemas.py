@@ -45,10 +45,12 @@ class CatalogRequestIn(BaseModel):
 
 
 class EntityOut(BaseModel):
-    application: str
-    error_text: str
-    user: str
-    location: str
+    model_config = ConfigDict(extra="ignore")
+
+    application: str = ""
+    error_text: str = ""
+    user: str = ""
+    location: str = ""
 
 
 class ClassificationOut(BaseModel):
@@ -139,7 +141,7 @@ class TicketOut(BaseModel):
     department: str
     location: str
     channel: str
-    status: Literal["Open", "In Progress", "Pending", "Resolved", "Escalated"]
+    status: str = "Open"
     description: str
     classification: ClassificationOut
     servicenow: SnowOut
