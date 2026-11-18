@@ -56,6 +56,13 @@ const SCENARIOS = [
     prompt: 'How do I bake sourdough bread on company time?',
     color: '#f59e0b',
   },
+  {
+    id: 6,
+    label: 'Policy Denied: Figma (Contractor)',
+    desc: 'Contractor requesting restricted SaaS -> Blocked by Policy -> ServiceNow REQ Rejected.',
+    prompt: 'I need Figma Enterprise installed on my laptop.',
+    color: '#f43f5e',
+  },
 ];
 
 const PERSONAS = [
