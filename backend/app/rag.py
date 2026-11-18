@@ -127,17 +127,23 @@ class RAGEngine:
             return text, "Safety Guardrail", "Knowledge Base Refusal"
 
         top_citation = search_result.results[0]
-        context_snippets = [f"[{res.id}: {res.title}]\n{res.excerpt}" for res in search_result.results[:2]]
-        context_block = "\n\n".join(context_snippets)
+        # Build enriched context with full steps from the matched verified article
+        art = next((a for a in self.store.articles if a["id"] == top_citation.id), None)
+        if art and art.get("steps"):
+            steps_joined = "\n".join(f"- Step {i+1}: {st}" for i, st in enumerate(art["steps"]))
+            context_block = f"[{art['id']}: {art.get('title', '')}]\nSummary: {art.get('summary', '')}\nProcedure & Steps:\n{steps_joined}"
+        else:
+            context_snippets = [f"[{res.id}: {res.title}]\n{res.excerpt}" for res in search_result.results[:2]]
+            context_block = "\n\n".join(context_snippets)
 
-        # 1. Try Groq (Ultra-fast, Free, Llama 3.3 / Qwen)
+        # 1. Try Groq (Ultra-fast, Free, Qwen / Llama)
         if self.groq_api_key:
             try:
                 groq_reply = self._call_groq(query, context_block)
                 if groq_reply:
                     return (
                         groq_reply,
-                        "Groq (meta-llama/llama-3.3-70b-versatile)",
+                        "Groq (qwen/qwen3.8-27b)",
                         f"Grounded on {top_citation.id} via FAISS",
                     )
             except Exception as exc:
@@ -252,7 +258,7 @@ class RAGEngine:
         return None
 
     def _call_groq(self, query: str, context: str) -> str | None:
-        """Call Groq API (Meta-Llama 3.3 70B / Qwen 2.5) via high-speed serverless inference."""
+        """Call Groq API (Qwen 3.8 / 2.5) via high-speed serverless inference."""
         import httpx
 
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -260,31 +266,35 @@ class RAGEngine:
             "Authorization": f"Bearer {self.groq_api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are the enterprise IT Service Desk AI. Provide clear, accurate troubleshooting instructions "
-                        "using ONLY the approved runbook context below. Keep it direct, structured, and actionable.\n\n"
-                        f"APPROVED RUNBOOK CONTEXT:\n{context}"
-                    ),
-                },
-                {"role": "user", "content": query},
-            ],
-            "temperature": 0.2,
-            "max_tokens": 400,
-        }
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post(url, json=payload, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
-                logger.warning("Groq API returned HTTP %d: %s", resp.status_code, resp.text)
-        except Exception as exc:
-            logger.warning("Groq API error: %s", exc)
+        models_to_try = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the enterprise IT Service Desk AI. Provide clear, accurate troubleshooting instructions "
+                            "using ONLY the approved runbook context below. Keep it direct, structured, and actionable.\n\n"
+                            f"APPROVED RUNBOOK CONTEXT:\n{context}"
+                        ),
+                    },
+                    {"role": "user", "content": query},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 400,
+            }
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["choices"][0]["message"]["content"].strip()
+                        if content:
+                            return content
+                    logger.warning("Groq API model %s returned HTTP %d: %s", model, resp.status_code, resp.text)
+            except Exception as exc:
+                logger.warning("Groq API error for model %s: %s", model, exc)
         return None
 
     def _call_openai(self, query: str, context: str) -> str | None:

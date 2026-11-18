@@ -58,13 +58,34 @@ app.add_middleware(
 def get_health() -> dict:
     total_tickets = len(store.tickets)
     ai_resolved = len([t for t in store.tickets if t.get("ai_resolved")])
+    if settings.groq_api_key:
+        provider = "Groq Serverless LPU"
+        provider_label = "Groq Cloud (qwen/qwen3.8-27b)"
+        provider_note = "High-speed LPU inference powered by Groq & FAISS dense vector retrieval."
+    elif settings.openai_api_key:
+        provider = "OpenAI"
+        provider_label = "OpenAI (gpt-4o-mini)"
+        provider_note = "OpenAI API with FAISS dense vector retrieval."
+    elif settings.gemini_api_key:
+        provider = "Google Gemini"
+        provider_label = "Google Gemini (gemini-1.5-flash)"
+        provider_note = "Google Gemini API with FAISS dense vector retrieval."
+    elif settings.hf_token:
+        provider = "Hugging Face"
+        provider_label = f"Hugging Face ({settings.hf_model})"
+        provider_note = "Hugging Face Inference API with FAISS dense vector retrieval."
+    else:
+        provider = "Hugging Face / Open Source"
+        provider_label = f"Hugging Face Open-Source ({settings.hf_model}) / Grounded Synthesizer"
+        provider_note = "FAISS FlatIP 384-dim dense vector database with all-MiniLM-L6-v2 embeddings."
+
     return {
         "status": "operational",
         "service": "SORIM.AI ITSM Engine",
-        "provider": "Hugging Face / Open Source",
-        "provider_label": f"Hugging Face ({settings.hf_model})" if settings.hf_token else f"Hugging Face Open-Source ({settings.hf_model}) / Grounded Synthesizer",
-        "provider_note": "FAISS FlatIP 384-dim dense vector database with all-MiniLM-L6-v2 embeddings.",
-        "model": settings.hf_model,
+        "provider": provider,
+        "provider_label": provider_label,
+        "provider_note": provider_note,
+        "model": "qwen/qwen3.8-27b" if settings.groq_api_key else settings.hf_model,
         "store": "MongoDB Atlas" if store.use_mongo else "Local Persistent JSON Store",
         "servicenow": "Live ServiceNow Table API" if servicenow.is_live else "Enterprise ServiceNow Mock (Table API Spec)",
         "embeddings": embedder.kind,
