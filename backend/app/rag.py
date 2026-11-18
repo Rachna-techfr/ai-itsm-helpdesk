@@ -68,6 +68,9 @@ class RAGEngine:
         self.store = store
         self.hf_token = settings.hf_token
         self.hf_model = settings.hf_model
+        self.groq_api_key = settings.groq_api_key
+        self.openai_api_key = settings.openai_api_key
+        self.gemini_api_key = settings.gemini_api_key
         self.vector_store = FAISSVectorStore(dim=embedder.dim)
         self._rebuild_index()
 
@@ -127,7 +130,46 @@ class RAGEngine:
         context_snippets = [f"[{res.id}: {res.title}]\n{res.excerpt}" for res in search_result.results[:2]]
         context_block = "\n\n".join(context_snippets)
 
-        # 1. If HF_TOKEN is configured, query Hugging Face Inference API / Router
+        # 1. Try Groq (Ultra-fast, Free, Llama 3.3 / Qwen)
+        if self.groq_api_key:
+            try:
+                groq_reply = self._call_groq(query, context_block)
+                if groq_reply:
+                    return (
+                        groq_reply,
+                        "Groq (meta-llama/llama-3.3-70b-versatile)",
+                        f"Grounded on {top_citation.id} via FAISS",
+                    )
+            except Exception as exc:
+                logger.warning("Groq API call failed (%s); trying fallback.", exc)
+
+        # 2. Try OpenAI (if key configured)
+        if self.openai_api_key:
+            try:
+                oa_reply = self._call_openai(query, context_block)
+                if oa_reply:
+                    return (
+                        oa_reply,
+                        "OpenAI (gpt-4o-mini)",
+                        f"Grounded on {top_citation.id} via FAISS",
+                    )
+            except Exception as exc:
+                logger.warning("OpenAI API call failed (%s); trying fallback.", exc)
+
+        # 3. Try Google Gemini (if key configured)
+        if self.gemini_api_key:
+            try:
+                gem_reply = self._call_gemini(query, context_block)
+                if gem_reply:
+                    return (
+                        gem_reply,
+                        "Google Gemini (gemini-1.5-flash)",
+                        f"Grounded on {top_citation.id} via FAISS",
+                    )
+            except Exception as exc:
+                logger.warning("Gemini API call failed (%s); trying fallback.", exc)
+
+        # 4. If HF_TOKEN is configured, query Hugging Face Inference API / Router
         if self.hf_token:
             try:
                 hf_reply = self._call_huggingface(query, context_block)
@@ -140,7 +182,7 @@ class RAGEngine:
             except Exception as exc:
                 logger.warning("Hugging Face API call failed (%s); using grounded synthesizer.", exc)
 
-        # 2. Grounded deterministic synthesis over matched runbook
+        # 5. Grounded deterministic synthesis over matched runbook
         art = next((a for a in self.store.articles if a["id"] == top_citation.id), None)
         if art and art.get("steps"):
             steps_list = "\n".join(f"{i+1}. {st}" for i, st in enumerate(art["steps"]))
@@ -207,4 +249,96 @@ class RAGEngine:
                         return data[0].get("generated_text", "").strip()
         except Exception as exc:
             logger.warning("HTTP fallback failed: %s", exc)
+        return None
+
+    def _call_groq(self, query: str, context: str) -> str | None:
+        """Call Groq API (Meta-Llama 3.3 70B / Qwen 2.5) via high-speed serverless inference."""
+        import httpx
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the enterprise IT Service Desk AI. Provide clear, accurate troubleshooting instructions "
+                        "using ONLY the approved runbook context below. Keep it direct, structured, and actionable.\n\n"
+                        f"APPROVED RUNBOOK CONTEXT:\n{context}"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 400,
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+                logger.warning("Groq API returned HTTP %d: %s", resp.status_code, resp.text)
+        except Exception as exc:
+            logger.warning("Groq API error: %s", exc)
+        return None
+
+    def _call_openai(self, query: str, context: str) -> str | None:
+        """Call OpenAI API (gpt-4o-mini)."""
+        import httpx
+
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are the enterprise IT Helpdesk AI. Answer using ONLY this context:\n\n{context}",
+                },
+                {"role": "user", "content": query},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 400,
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            logger.warning("OpenAI API error: %s", exc)
+        return None
+
+    def _call_gemini(self, query: str, context: str) -> str | None:
+        """Call Google Gemini API (gemini-1.5-flash)."""
+        import httpx
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_api_key}"
+        prompt = (
+            f"You are the enterprise IT Helpdesk AI. Answer using ONLY this approved runbook context:\n\n"
+            f"{context}\n\nQuestion: {query}"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 400},
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        return candidates[0]["content"]["parts"][0]["text"].strip()
+        except Exception as exc:
+            logger.warning("Gemini API error: %s", exc)
         return None

@@ -26,6 +26,9 @@ class Settings:
     servicenow_password: str
     servicenow_token: str
     data_dir: Path
+    groq_api_key: str = ""
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
     auto_resolve_threshold: float = 0.85
     escalate_below: float = 0.62
     rag_threshold: float = 0.18
@@ -42,6 +45,9 @@ def load_settings() -> Settings:
         hf_token=os.getenv("HF_TOKEN", "").strip(),
         hf_model=os.getenv("HF_MODEL", "Qwen/Qwen2.5-3B-Instruct").strip()
         or "Qwen/Qwen2.5-3B-Instruct",
+        groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/"),
         ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2").strip() or "llama3.2",
         embedding_backend=os.getenv("EMBEDDING_BACKEND", "auto").strip().lower() or "auto",
